@@ -164,7 +164,7 @@ jobs:
           #!/bin/bash
           set -euo pipefail
           XCODEBUILD="$(xcrun --find xcodebuild)"
-          exec "$XCODEBUILD" -skipPackagePluginValidation "$@"
+          exec "$XCODEBUILD" -skipPackagePluginValidation -skipMacroValidation "$@"
           EOF
           chmod +x "$RUNNER_TEMP/bin/xcodebuild"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"

@@ -164,6 +164,11 @@ jobs:
           #!/bin/bash
           set -euo pipefail
           XCODEBUILD="$(xcrun --find xcodebuild)"
+          for arg in "$@"; do
+            if [[ "$arg" == "-create-xcframework" ]]; then
+              exec "$XCODEBUILD" "$@"
+            fi
+          done
           exec "$XCODEBUILD" -skipPackagePluginValidation -skipMacroValidation "$@"
           EOF
           chmod +x "$RUNNER_TEMP/bin/xcodebuild"

@@ -156,6 +156,19 @@ jobs:
           fi
           cmake --version
 
+      - name: Allow Swift package plugins in Xcode
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/xcodebuild" <<'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          XCODEBUILD="$(xcrun --find xcodebuild)"
+          exec "$XCODEBUILD" -skipPackagePluginValidation "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/xcodebuild"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Build an ad-hoc local app
         run: |
           set -euo pipefail

@@ -122,7 +122,7 @@ jobs:
             jq -r '.name // .tag_name' <<< "$release"
             echo "$delimiter"
             echo "body<<$delimiter"
-            jq -r '.body // ""' <<< "$release"
+            jq -r '.body // \"\"' <<< "$release"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
@@ -130,7 +130,7 @@ jobs:
     name: Build ${{ needs.discover.outputs.tag }}
     needs: discover
     if: needs.discover.outputs.should_build == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     permissions:
       contents: write
@@ -173,8 +173,7 @@ jobs:
           app_version=$(/usr/libexec/PlistBuddy -c 'Print:CFBundleShortVersionString' "$app/Contents/Info.plist")
           build_version=$(/usr/libexec/PlistBuddy -c 'Print:CFBundleVersion' "$app/Contents/Info.plist")
           architecture=$(uname -m)
-          safe_tag="${TAG//\//-}"
-          safe_tag="${safe_tag// /-}"
+          safe_tag=$(printf '%s' "$TAG" | tr '/ ' '--')
           zip_name="VoiceInk-${safe_tag}-macOS-${architecture}.zip"
           zip_path="$RUNNER_TEMP/$zip_name"
           checksum_path="$RUNNER_TEMP/$zip_name.sha256"

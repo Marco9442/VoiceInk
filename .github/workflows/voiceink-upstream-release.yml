@@ -1,0 +1,231 @@
+name: Sync and build upstream releases
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional upstream release tag (for example v2.13)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voiceink-upstream-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync fork main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Sync main with upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh repo sync "$REPOSITORY" --source Beingpax/VoiceInk --branch main
+
+  discover:
+    name: Find an unbuilt upstream release
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.find.outputs.should_build }}
+      tag: ${{ steps.find.outputs.tag }}
+      name: ${{ steps.find.outputs.name }}
+      body: ${{ steps.find.outputs.body }}
+      prerelease: ${{ steps.find.outputs.prerelease }}
+      source_sha: ${{ steps.find.outputs.source_sha }}
+    steps:
+      - id: find
+        name: Select the next upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_file="$RUNNER_TEMP/upstream-releases.json"
+          fork_file="$RUNNER_TEMP/fork-releases.json"
+
+          gh api --paginate "repos/Beingpax/VoiceInk/releases?per_page=100" | jq -s 'add' > "$upstream_file"
+          gh api --paginate "repos/$REPOSITORY/releases?per_page=100" | jq -s 'add' > "$fork_file"
+
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            release=$(jq -c --arg tag "$REQUESTED_TAG" '[.[] | select(.tag_name == $tag and .draft == false)] | .[0] // null' "$upstream_file")
+          else
+            release=$(jq -c --slurpfile fork "$fork_file" '
+              . as $upstream
+              | ($fork[0] // []) as $fork_releases
+              | [ $upstream[]
+                  | select(.draft == false)
+                  | . as $candidate
+                  | select(([$fork_releases[].tag_name] | index($candidate.tag_name)) == null)
+                ]
+              | sort_by(.published_at // .created_at)
+              | reverse
+              | .[0] // null
+            ' "$upstream_file")
+          fi
+
+          if [[ "$release" == "null" ]]; then
+            echo "No unbuilt upstream release found."
+            {
+              echo "should_build=false"
+              echo "tag="
+              echo "name="
+              echo "body="
+              echo "prerelease=false"
+              echo "source_sha="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tag=$(jq -r '.tag_name' <<< "$release")
+          if jq -e --arg tag "$tag" 'any(.[]; .tag_name == $tag)' "$fork_file" >/dev/null; then
+            echo "Fork already has release $tag."
+            {
+              echo "should_build=false"
+              echo "tag=$tag"
+              echo "name="
+              echo "body="
+              echo "prerelease=false"
+              echo "source_sha="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ref=$(gh api "repos/Beingpax/VoiceInk/git/ref/tags/$tag")
+          object_type=$(jq -r '.object.type' <<< "$ref")
+          object_sha=$(jq -r '.object.sha' <<< "$ref")
+          if [[ "$object_type" == "tag" ]]; then
+            source_sha=$(gh api "repos/Beingpax/VoiceInk/git/tags/$object_sha" --jq '.object.sha')
+          else
+            source_sha="$object_sha"
+          fi
+
+          delimiter="VOICEINK_$(date +%s%N)"
+          {
+            echo "should_build=true"
+            echo "tag=$tag"
+            echo "prerelease=$(jq -r '.prerelease | tostring' <<< "$release")"
+            echo "source_sha=$source_sha"
+            echo "name<<$delimiter"
+            jq -r '.name // .tag_name' <<< "$release"
+            echo "$delimiter"
+            echo "body<<$delimiter"
+            jq -r '.body // ""' <<< "$release"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ needs.discover.outputs.tag }}
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the upstream release tag
+        uses: actions/checkout@v4
+        with:
+          repository: Beingpax/VoiceInk
+          ref: ${{ needs.discover.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Show build environment
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install CMake if needed
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+
+      - name: Build an ad-hoc local app
+        run: |
+          set -euo pipefail
+          make local DEPS_DIR="$RUNNER_TEMP/VoiceInk-Dependencies" LOCAL_DERIVED_DATA="$RUNNER_TEMP/VoiceInk-DerivedData" LOCAL_CODESIGN_IDENTITY=-
+
+      - name: Package and verify the app
+        id: package
+        env:
+          TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          set -euo pipefail
+          app="$HOME/Downloads/VoiceInk.app"
+          test -d "$app"
+
+          app_version=$(/usr/libexec/PlistBuddy -c 'Print:CFBundleShortVersionString' "$app/Contents/Info.plist")
+          build_version=$(/usr/libexec/PlistBuddy -c 'Print:CFBundleVersion' "$app/Contents/Info.plist")
+          architecture=$(uname -m)
+          safe_tag="${TAG//\//-}"
+          safe_tag="${safe_tag// /-}"
+          zip_name="VoiceInk-${safe_tag}-macOS-${architecture}.zip"
+          zip_path="$RUNNER_TEMP/$zip_name"
+          checksum_path="$RUNNER_TEMP/$zip_name.sha256"
+
+          echo "Upstream release tag: $TAG"
+          echo "App version: $app_version"
+          echo "Build version: $build_version"
+          echo "Architecture: $architecture"
+          file "$app/Contents/MacOS/VoiceInk"
+
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
+          shasum -a 256 "$zip_path" > "$checksum_path"
+
+          echo "zip_path=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "architecture=$architecture" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the matching fork release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.discover.outputs.tag }}
+          RELEASE_NAME: ${{ needs.discover.outputs.name }}
+          RELEASE_BODY: ${{ needs.discover.outputs.body }}
+          PRERELEASE: ${{ needs.discover.outputs.prerelease }}
+          SOURCE_SHA: ${{ needs.discover.outputs.source_sha }}
+          ZIP_PATH: ${{ steps.package.outputs.zip_path }}
+          CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
+          APP_VERSION: ${{ steps.package.outputs.app_version }}
+          BUILD_VERSION: ${{ steps.package.outputs.build_version }}
+          ARCHITECTURE: ${{ steps.package.outputs.architecture }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            printf '%s\n' "$RELEASE_BODY"
+            printf '\n---\n'
+            printf 'Unofficial GitHub Actions build of Beingpax/VoiceInk.\n'
+            printf 'Upstream release: %s\n' "$TAG"
+            printf 'Upstream commit: %s\n' "$SOURCE_SHA"
+            printf 'Bundle version: %s (build %s)\n' "$APP_VERSION" "$BUILD_VERSION"
+            printf 'Architecture: %s\n' "$ARCHITECTURE"
+            printf 'Signing: ad-hoc; automatic updates are disabled by the upstream local-build configuration.\n'
+          } > "$notes"
+
+          release_args=("$TAG" "$ZIP_PATH" "$CHECKSUM_PATH" --repo "$REPOSITORY" --target "$SOURCE_SHA" --title "$RELEASE_NAME" --notes-file "$notes")
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "${release_args[@]}"
+          gh release view "$TAG" --repo "$REPOSITORY" --json url --jq '.url'

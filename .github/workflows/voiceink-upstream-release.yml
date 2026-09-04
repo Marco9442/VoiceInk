@@ -177,7 +177,7 @@ jobs:
       - name: Build an ad-hoc local app
         run: |
           set -euo pipefail
-          make local DEPS_DIR="$RUNNER_TEMP/VoiceInk-Dependencies" LOCAL_DERIVED_DATA="$RUNNER_TEMP/VoiceInk-DerivedData" LOCAL_CODESIGN_IDENTITY=-
+          make local DEPS_DIR="$HOME/VoiceInk-Dependencies" LOCAL_DERIVED_DATA="$RUNNER_TEMP/VoiceInk-DerivedData" LOCAL_CODESIGN_IDENTITY=-
 
       - name: Package and verify the app
         id: package

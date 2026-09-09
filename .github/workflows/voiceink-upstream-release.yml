@@ -136,10 +136,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout the upstream release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           repository: Beingpax/VoiceInk
-          ref: ${{ needs.discover.outputs.tag }}
+          ref: ${{ needs.discover.outputs.source_sha }}
           fetch-depth: 0
 
       - name: Show build environment
@@ -156,7 +156,9 @@ jobs:
           fi
           cmake --version
 
-      - name: Allow Swift package plugins in Xcode
+      - name: Configure Xcode for unattended release builds
+        env:
+          UPSTREAM_TAG: ${{ needs.discover.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
@@ -169,10 +171,16 @@ jobs:
               exec "$XCODEBUILD" "$@"
             fi
           done
-          exec "$XCODEBUILD" -skipPackagePluginValidation -skipMacroValidation "$@"
+          # v1.72 的 FluidAudio 非 Sendable 状态必须留在调用方 actor 上。
+          # 使用 SE-0461 的隔离语义，不关闭 Swift 并发检查。
+          if [[ "${VOICEINK_UPSTREAM_TAG:-}" == "v1.72" ]]; then
+            set -- "$@" 'OTHER_SWIFT_FLAGS=$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault'
+          fi
+          exec "$XCODEBUILD" -skipPackagePluginValidation -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile "$@"
           EOF
           chmod +x "$RUNNER_TEMP/bin/xcodebuild"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "VOICEINK_UPSTREAM_TAG=$UPSTREAM_TAG" >> "$GITHUB_ENV"
 
       - name: Build an ad-hoc local app
         run: |

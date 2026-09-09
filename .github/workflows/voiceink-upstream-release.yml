@@ -142,6 +142,13 @@ jobs:
           ref: ${{ needs.discover.outputs.source_sha }}
           fetch-depth: 0
 
+      # 固定旧版发行源码的工具链，避免 runner 默认 Xcode 升级破坏依赖兼容性。
+      - name: Select the v1.72 release toolchain
+        if: needs.discover.outputs.tag == 'v1.72'
+        run: |
+          test -d /Applications/Xcode_26.2.app/Contents/Developer
+          echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> "$GITHUB_ENV"
+
       - name: Show build environment
         run: |
           sw_vers
@@ -157,8 +164,6 @@ jobs:
           cmake --version
 
       - name: Configure Xcode for unattended release builds
-        env:
-          UPSTREAM_TAG: ${{ needs.discover.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
@@ -171,16 +176,10 @@ jobs:
               exec "$XCODEBUILD" "$@"
             fi
           done
-          # v1.72 的 FluidAudio 非 Sendable 状态必须留在调用方 actor 上。
-          # 使用 SE-0461 的隔离语义，不关闭 Swift 并发检查。
-          if [[ "${VOICEINK_UPSTREAM_TAG:-}" == "v1.72" ]]; then
-            set -- "$@" 'OTHER_SWIFT_FLAGS=$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault'
-          fi
           exec "$XCODEBUILD" -skipPackagePluginValidation -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile "$@"
           EOF
           chmod +x "$RUNNER_TEMP/bin/xcodebuild"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          echo "VOICEINK_UPSTREAM_TAG=$UPSTREAM_TAG" >> "$GITHUB_ENV"
 
       - name: Build an ad-hoc local app
         run: |

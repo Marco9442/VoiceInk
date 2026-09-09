@@ -70,8 +70,8 @@ enum AppDefaults {
             // Enhancement
             "SkipShortEnhancement": true,
             "ShortEnhancementWordThreshold": 3,
-            "EnhancementTimeoutSeconds": 7,
-            "EnhancementRetryOnTimeout": true,
+            EnhancementRequestSettings.timeoutKey: EnhancementRequestSettings.defaultTimeoutSeconds,
+            EnhancementRequestSettings.retryOnTimeoutKey: EnhancementRequestSettings.defaultRetryOnTimeout,
 
             // Model
             "PrewarmModelOnWake": true,

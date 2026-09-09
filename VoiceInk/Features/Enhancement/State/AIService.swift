@@ -241,6 +241,8 @@ class AIService: ObservableObject {
     private var voiceInkRefineObserver: AnyCancellable?
 
     @Published private var openRouterModels: [String] = []
+    @Published private var openRouterModelCatalog: [OpenRouterModel] = []
+    private var isOpenRouterCatalogRefreshing = false
     @Published private(set) var isOllamaRefreshing = false
 
     var connectedProviders: [AIProvider] {
@@ -429,6 +431,14 @@ class AIService: ObservableObject {
     }
 
     private func loadSavedOpenRouterModels() {
+        if let savedCatalog = userDefaults.data(forKey: "openRouterModelCatalog"),
+            let decodedCatalog = try? JSONDecoder().decode([OpenRouterModel].self, from: savedCatalog)
+        {
+            openRouterModelCatalog = decodedCatalog
+            openRouterModels = decodedCatalog.map(\.id)
+            return
+        }
+
         if let savedModels = userDefaults.array(forKey: "openRouterModels") as? [String] {
             openRouterModels = savedModels
         }
@@ -436,6 +446,9 @@ class AIService: ObservableObject {
 
     private func saveOpenRouterModels() {
         userDefaults.set(openRouterModels, forKey: "openRouterModels")
+        if let encodedCatalog = try? JSONEncoder().encode(openRouterModelCatalog) {
+            userDefaults.set(encodedCatalog, forKey: "openRouterModelCatalog")
+        }
     }
 
     func selectModel(_ model: String) {
@@ -561,7 +574,7 @@ class AIService: ObservableObject {
     func checkOllamaConnection(completion: @escaping (Bool) -> Void) {
         Task { [weak self] in
             guard let self = self else { return }
-            await self.refreshOllamaAvailability()
+            _ = await self.refreshOllamaAvailability()
             await MainActor.run {
                 completion(self.ollamaService.isConnected)
             }
@@ -576,7 +589,7 @@ class AIService: ObservableObject {
     func refreshOllamaAvailabilityInBackground() {
         Task { [weak self] in
             guard let self else { return }
-            await self.refreshOllamaAvailability()
+            _ = await self.refreshOllamaAvailability()
         }
     }
 
@@ -700,25 +713,52 @@ class AIService: ObservableObject {
         NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
     }
 
+    func openRouterModelMetadata(for modelName: String) -> OpenRouterModel? {
+        openRouterModelCatalog.first(where: { $0.id == modelName })
+    }
+
+    @MainActor
+    func fetchOpenRouterModelsIfNeededForMigration() async {
+        guard openRouterModelCatalog.isEmpty,
+            APIKeyManager.shared.hasAPIKey(forProvider: AIProvider.openRouter.rawValue)
+        else {
+            return
+        }
+
+        await fetchOpenRouterModels()
+    }
+
+    @MainActor
     func fetchOpenRouterModels() async {
+        guard !isOpenRouterCatalogRefreshing else { return }
+        isOpenRouterCatalogRefreshing = true
+        defer { isOpenRouterCatalogRefreshing = false }
+
         do {
-            let models = try await OpenRouterClient.fetchModels()
-            await MainActor.run {
-                self.openRouterModels = models
-                self.saveOpenRouterModels()
-                if self.selectedProvider == .openRouter && self.currentModel == self.selectedProvider.defaultModel
-                    && !models.isEmpty
-                {
-                    self.selectModel(models.first!)
-                }
-                self.objectWillChange.send()
+            let catalog = try await OpenRouterClient.fetchModelCatalog()
+            openRouterModelCatalog = catalog
+            openRouterModels = catalog.map(\.id)
+            saveOpenRouterModels()
+            if !openRouterModels.isEmpty,
+                let savedModel = selectedModels[.openRouter],
+                !openRouterModels.contains(savedModel)
+            {
+                let replacement = openRouterModels.contains(AIProvider.openRouter.defaultModel)
+                    ? AIProvider.openRouter.defaultModel
+                    : openRouterModels[0]
+                selectModel(replacement, for: .openRouter)
+            } else if selectedProvider == .openRouter,
+                selectedModels[.openRouter] == nil,
+                !openRouterModels.isEmpty
+            {
+                let initialModel = openRouterModels.contains(AIProvider.openRouter.defaultModel)
+                    ? AIProvider.openRouter.defaultModel
+                    : openRouterModels[0]
+                selectModel(initialModel)
             }
+            objectWillChange.send()
         } catch {
-            await MainActor.run {
-                self.openRouterModels = []
-                self.saveOpenRouterModels()
-                self.objectWillChange.send()
-            }
+            // Keep the last successful catalog during transient OpenRouter failures.
         }
     }
 }

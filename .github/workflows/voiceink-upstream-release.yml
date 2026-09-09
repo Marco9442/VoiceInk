@@ -31,7 +31,7 @@ jobs:
         run: gh repo sync "$REPOSITORY" --source Beingpax/VoiceInk --branch main
 
   discover:
-    name: Find an unbuilt upstream release
+    name: Find the latest upstream release
     needs: sync
     runs-on: ubuntu-latest
     permissions:
@@ -62,14 +62,9 @@ jobs:
           if [[ -n "$REQUESTED_TAG" ]]; then
             release=$(jq -c --arg tag "$REQUESTED_TAG" '[.[] | select(.tag_name == $tag and .draft == false)] | .[0] // null' "$upstream_file")
           else
-            release=$(jq -c --slurpfile fork "$fork_file" '
-              . as $upstream
-              | ($fork[0] // []) as $fork_releases
-              | [ $upstream[]
-                  | select(.draft == false)
-                  | . as $candidate
-                  | select(([$fork_releases[].tag_name] | index($candidate.tag_name)) == null)
-                ]
+            # 只跟进最新发布；已发布则跳过，不自动回溯历史版本。
+            release=$(jq -c '
+              [.[] | select(.draft == false)]
               | sort_by(.published_at // .created_at)
               | reverse
               | .[0] // null
@@ -142,12 +137,25 @@ jobs:
           ref: ${{ needs.discover.outputs.source_sha }}
           fetch-depth: 0
 
-      # 固定旧版发行源码的工具链，避免 runner 默认 Xcode 升级破坏依赖兼容性。
-      - name: Select the v1.72 release toolchain
-        if: needs.discover.outputs.tag == 'v1.72'
+      - name: Select the dependency-compatible toolchain
+        shell: bash
         run: |
-          test -d /Applications/Xcode_26.2.app/Contents/Developer
-          echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> "$GITHUB_ENV"
+          set -euo pipefail
+          # v1.71、v1.72 使用同一个 FluidAudio 提交；按依赖而非标签选择工具链。
+          resolved="VoiceInk.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+          if [[ -f "$resolved" ]] && jq -e '
+            any(.pins[]?;
+              .identity == "fluidaudio" and
+              .state.revision == "4de9aca1d1dbdafa72f6d349b15d0009032a83f8")
+          ' "$resolved" >/dev/null; then
+            developer_dir="/Applications/Xcode_26.2.app/Contents/Developer"
+            if [[ ! -d "$developer_dir" ]]; then
+              echo "::error::This FluidAudio revision requires Xcode 26.2, but it is missing from the runner."
+              exit 1
+            fi
+            echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+            echo "Using Xcode 26.2 for the pinned FluidAudio revision."
+          fi
 
       - name: Show build environment
         run: |

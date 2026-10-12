@@ -20,7 +20,7 @@ concurrency:
 jobs:
   sync:
     name: Sync fork main
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -33,7 +33,7 @@ jobs:
   discover:
     name: Find the latest upstream release
     needs: sync
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
